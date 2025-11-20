@@ -99,6 +99,20 @@ Using the node is straightforward and designed for minimal workflow disruption.
 > [!TIP]
 > `base_shift`/`max_shift` let you blend the flow-matching schedule as you scale to extremely large canvases. Keeping them at `1.15`/`1.35` mirrors the defaults we found stable in early tests—feel free to tune if you observe over-smoothing or excess repetition.
 
+#### How DyPE for Qwen Image Works
+
+The native Qwen Image transformer was trained on a 1024×1024 latent grid, so every attention layer expects RoPE caches sized for 58×104 spatial tokens (plus text tokens). When you push beyond that window, the model reuses frequencies and starts repeating structures.
+
+The DyPE node swaps the stock `EmbedND` for `QwenSpatialPosEmbed`, a drop-in replacement that:
+
+* Clones the original positional embedder so the node can be removed without side-effects.
+* Recomputes the rotary cache using YaRN or NTK scaling for the height/width axes while leaving the text index axis untouched.
+* Tracks the sampler’s normalized timestep (via a lightweight wrapper) and applies the DyPE power ramp (`t^λ`) to blend from the base grid to the expanded grid over the course of sampling. Early steps stay close to the training spectrum; late steps receive the extra high-frequency coverage that keeps 4K images coherent.
+* Interpolates the FLUX-style flow shift between `base_shift` and `max_shift` according to the requested canvas size so the noise schedule stays in sync with the wider attention field.
+* Emits INFO logs (`[DyPE QwenImage] axis=…`) showing the current grid lengths, ramp strength, and YaRN/NTK factors. These diagnostics make it easy to correlate visual artifacts with the positional scaling parameters.
+
+Because the embedder is swapped via `ModelPatcher`, you can chain other ComfyUI optimizations after the DyPE node, and disabling the node returns you to the stock Qwen behaviour instantly.
+
 ### Node Inputs
 
 *   **`model`**: The FLUX model to be patched.
