@@ -184,6 +184,9 @@ class QwenSpatialPosEmbed(nn.Module):
                     "current_timestep": float(self.current_timestep),
                     "dype_exponent": float(self.dype_exponent),
                 }
+                ramp_factor = float(self.current_timestep) ** float(self.dype_exponent)
+            else:
+                ramp_factor = 0.0
 
             if axis_idx == 1:
                 base_len = grid.base_axes[0]
@@ -198,19 +201,11 @@ class QwenSpatialPosEmbed(nn.Module):
                 current_len = base_len
                 target_len = current_len
 
-            logger.info(
-                "axis=%s base_len=%d current_len=%d target_len=%d method=%s enable_dype=%s timestep=%.4f",
-                axis_name,
-                base_len,
-                current_len,
-                target_len,
-                self.method,
-                self.enable_dype,
-                self.current_timestep,
-            )
-
+            mode = "base"
+            log_suffix = ""
             if axis_idx == 0 or self.method == "base":
                 cos, sin = get_1d_rotary_pos_embed(**common_kwargs)
+                mode = "static"
             else:
                 if self.method == "yarn" and target_len > base_len:
                     max_pe_len = torch.tensor(
@@ -223,6 +218,9 @@ class QwenSpatialPosEmbed(nn.Module):
                         ori_max_pe_len=base_len,
                         **dype_kwargs,
                     )
+                    ratio = target_len / max(base_len, 1)
+                    mode = "yarn"
+                    log_suffix = f" ratio={ratio:.4f}"
                 elif self.method == "ntk" and target_len > base_len:
                     ntk_factor = max(target_len / max(base_len, 1), 1.0)
                     cos, sin = get_1d_rotary_pos_embed(
@@ -230,11 +228,28 @@ class QwenSpatialPosEmbed(nn.Module):
                         ntk_factor=ntk_factor,
                         **dype_kwargs,
                     )
+                    mode = "ntk"
+                    log_suffix = f" ntk_factor={ntk_factor:.4f}"
                 else:
                     cos, sin = get_1d_rotary_pos_embed(
                         **common_kwargs,
                         **dype_kwargs,
                     )
+                    mode = "static"
+
+            logger.info(
+                "axis=%s base_len=%d current_len=%d target_len=%d method=%s enable_dype=%s timestep=%.4f ramp_factor=%.4f mode=%s%s",
+                axis_name,
+                base_len,
+                current_len,
+                target_len,
+                self.method,
+                self.enable_dype,
+                self.current_timestep,
+                ramp_factor,
+                mode,
+                log_suffix,
+            )
 
             cos_reshaped = cos.view(*cos.shape[:-1], -1, 2)[..., :1]
             sin_reshaped = sin.view(*sin.shape[:-1], -1, 2)[..., :1]
