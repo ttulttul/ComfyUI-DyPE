@@ -157,6 +157,7 @@ class QwenSpatialPosEmbed(nn.Module):
 
         for axis_idx, axis_dim in enumerate(self.axes_dim):
             axis_pos = ids[..., axis_idx]
+            axis_name = ["index", "height", "width"][axis_idx] if axis_idx < 3 else f"axis_{axis_idx}"
 
             common_kwargs = {
                 "dim": int(axis_dim),
@@ -175,16 +176,35 @@ class QwenSpatialPosEmbed(nn.Module):
                     "dype_exponent": float(self.dype_exponent),
                 }
 
+            if axis_idx == 1:
+                base_len = grid.base_axes[0]
+                current_len = current_h
+                target_len = max(target_h, base_len)
+            elif axis_idx == 2:
+                base_len = grid.base_axes[1]
+                current_len = current_w
+                target_len = max(target_w, base_len)
+            else:
+                base_len = int(ids.shape[1])
+                current_len = base_len
+                target_len = current_len
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "QwenSpatialPosEmbed: axis=%s base_len=%d current_len=%d target_len=%d "
+                    "method=%s enable_dype=%s timestep=%.4f",
+                    axis_name,
+                    base_len,
+                    current_len,
+                    target_len,
+                    self.method,
+                    self.enable_dype,
+                    self.current_timestep,
+                )
+
             if axis_idx == 0 or self.method == "base":
                 cos, sin = get_1d_rotary_pos_embed(**common_kwargs)
             else:
-                if axis_idx == 1:
-                    base_len = grid.base_axes[0]
-                    target_len = max(target_h, base_len)
-                else:
-                    base_len = grid.base_axes[1]
-                    target_len = max(target_w, base_len)
-
                 if self.method == "yarn" and target_len > base_len:
                     max_pe_len = torch.tensor(
                         target_len, dtype=freqs_dtype, device=axis_pos.device
