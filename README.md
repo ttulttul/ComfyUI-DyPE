@@ -46,6 +46,7 @@ This node provides a seamless, "plug-and-play" integration of DyPE into any FLUX
 *   **Single-Node Integration:** Simply place the `DyPE for FLUX` or `DyPE for Qwen Image` node after your model loader to patch the model. No complex workflow changes required.
 *   **Full Compatibility:** Works seamlessly with your existing ComfyUI workflows, samplers, schedulers, and other optimization nodes like Self-Attention or quantization.
 *   **Fine-Grained Control:** Exposes key DyPE hyperparameters, allowing you to tune the algorithm's strength and behavior for optimal results at different target resolutions.
+*   **Model-Aware Qwen Support:** Automatically infers Qwen patch geometry, adds editing-aware DyPE tapers, and gracefully patches non-FLUX samplers.
 *   **Zero Inference Overhead:** DyPE's adjustments happen on-the-fly with negligible performance impact.
 
 <div align="center">
@@ -92,9 +93,10 @@ Using the node is straightforward and designed for minimal workflow disruption.
 1.  **Load Your Qwen Image Model:** Use the usual `Load Checkpoint` node for `QwenImage`.
 2.  **Add the DyPE Node:** Drop in the `DyPE for Qwen Image` node (under `model_patches/unet`).
 3.  **Set Width/Height:** Match the values to your target latent/image resolution (the same numbers you use in `Empty Latent Image`).
-4.  **Confirm Base Resolution:** Leave `base_width/base_height` at the model’s training resolution (1024×1024) unless you are experimenting with fine-tuning variants.
-5.  **Choose Method:** `yarn` is recommended for aggressive extrapolation; switch to `ntk` if you prefer a smoother scaling curve.
-6.  **Run the KSampler:** Route the patched model output into your sampler as usual.
+4.  **Auto-Detect Geometry:** Leave `auto_detect` enabled to let the node read the Qwen patch size and base grid directly from the checkpoint. Disable it only if you need to override the base dimensions for custom fine-tunes.
+5.  **Dial In Editing:** Lower `editing_strength` (and pick an `editing_mode`) when you are working on inpainting or image-to-image tasks so DyPE eases off as it preserves source structure.
+6.  **Choose Method:** `yarn` is recommended for aggressive extrapolation; switch to `ntk` if you prefer a smoother scaling curve.
+7.  **Run the KSampler:** Route the patched model output into your sampler as usual.
 
 > [!TIP]
 > `base_shift`/`max_shift` let you blend the flow-matching schedule as you scale to extremely large canvases. Keeping them at `1.15`/`1.35` mirrors the defaults we found stable in early tests—feel free to tune if you observe over-smoothing or excess repetition.
@@ -126,6 +128,9 @@ Because the embedder is swapped via `ModelPatcher`, you can chain other ComfyUI 
     *   `1.0` (Linear): A good starting point for **~2K-3K** resolutions.
     *   `0.5` (Sub-linear): A gentler schedule that may work best for resolutions just above the model's native 1K.
 *   **`base_shift` / `max_shift`** (Advanced): These parameters control the interpolation of the dynamic noise schedule shift (`mu`). The default values (`0.5`, `1.15`) are taken directly from the FLUX architecture and are generally optimal. Adjust only if you are an advanced user experimenting with the noise schedule.
+*   **`auto_detect`**: When enabled (default), the node inspects the loaded Qwen checkpoint to recover its training grid and patch size. Disable it if you need to supply `base_width`/`base_height` manually.
+*   **`base_width` / `base_height`**: Manual override for the training canvas; only consulted when `auto_detect` is turned off.
+*   **`editing_strength` & `editing_mode`**: Let you taper DyPE during edits. Reduce the strength (e.g., 0.5) and pick a mode like `adaptive` to keep structure intact during image-to-image or inpainting workflows.
 
 > [!WARNING]
 > It seems the width/height parameters in the node are buggy. Keep the values below 1024x1024; doing so won’t affect your output.

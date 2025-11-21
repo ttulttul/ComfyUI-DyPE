@@ -133,6 +133,13 @@ def _install_comfy_stub() -> None:
         def __init__(self):
             self.patch_size = 2
             self.pe_embedder = _StubEmbedder()
+            self.vae_scale_factor = 8
+            self.sample_size = (128, 128)
+            self.config = types.SimpleNamespace(
+                sample_size=128,
+                patch_size=self.patch_size,
+                vae_scale_factor=self.vae_scale_factor,
+            )
 
     class _StubEmbedder(torch.nn.Module):
         def __init__(self):
@@ -194,6 +201,7 @@ def _install_comfy_stub() -> None:
 
 
 _install_comfy_stub()
+import comfy  # type: ignore  # noqa: E402
 
 
 def _install_comfy_api_stub() -> None:
@@ -354,6 +362,19 @@ class _RecordingEmbedder(torch.nn.Module):
         return torch.zeros(batch, 1, 6, 2, 2)
 
 
+class _ListHandler(logging.Handler):
+    def __init__(self, bucket: list[str], level: int = logging.INFO):
+        super().__init__(level=level)
+        self.bucket = bucket
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+        except Exception:  # pragma: no cover - defensive
+            message = record.msg
+        self.bucket.append(message)
+
+
 def _make_token_ids(expanded: bool) -> torch.Tensor:
     text_tokens = torch.tensor(
         [
@@ -471,12 +492,15 @@ def test_qwen_spatial_embedder_falls_back_to_backing():
         theta=backing.theta,
         axes_dim=backing.axes_dim,
         patch_size=2,
+        vae_scale_factor=8,
         method="yarn",
         enable_dype=False,
         dype_exponent=2.0,
         base_resolution=(32, 32),
         target_resolution=(32, 32),
         backing_embedder=backing,
+        editing_strength=0.0,
+        editing_mode="full",
     )
 
     ids = _make_token_ids(expanded=False)
@@ -493,19 +517,24 @@ def test_qwen_spatial_embedder_extends_when_grid_grows():
         theta=backing.theta,
         axes_dim=backing.axes_dim,
         patch_size=2,
+        vae_scale_factor=8,
         method="ntk",
         enable_dype=False,
         dype_exponent=1.0,
         base_resolution=(32, 32),
         target_resolution=(64, 64),
         backing_embedder=backing,
+        editing_strength=0.0,
+        editing_mode="full",
     )
 
     ids = _make_token_ids(expanded=True)
     output = embedder(ids)
 
     assert backing.calls == 0
-    assert output.shape == (1, 1, 6, 2, 2)
+    tokens = ids.shape[1]
+    embedding_dim = sum(backing.axes_dim) // 2
+    assert output.shape == (1, 1, tokens, embedding_dim, 2, 2)
 
 
 def test_apply_dype_to_qwen_image_installs_embedder_and_wrapper():
@@ -522,6 +551,9 @@ def test_apply_dype_to_qwen_image_installs_embedder_and_wrapper():
         base_height=1024,
         base_shift=1.15,
         max_shift=1.35,
+        auto_detect=False,
+        editing_strength=1.0,
+        editing_mode="full",
     )
 
     embedder = patched.model.diffusion_model.pe_embedder
@@ -530,7 +562,7 @@ def test_apply_dype_to_qwen_image_installs_embedder_and_wrapper():
     assert patched.model.model_sampling._dype_patched is True
 
     args_dict = {
-        "input": torch.zeros(1),
+        "input": torch.randn(1),
         "timestep": torch.tensor([0.5]),
         "c": {},
     }
@@ -540,4 +572,111 @@ def test_apply_dype_to_qwen_image_installs_embedder_and_wrapper():
 
     result = patched._wrapper(_dummy_model_fn, args_dict)
     assert hasattr(embedder, "current_timestep") and embedder.current_timestep == 0.5
+    assert embedder.current_editing is False
     assert isinstance(result, tuple) and result[1] is args_dict["timestep"]
+
+
+def test_apply_dype_to_qwen_image_auto_detects_geometry(caplog):
+    patcher = comfy.model_patcher.ModelPatcher()
+    caplog.set_level(logging.INFO, logger="src.qwen_spatial")
+    recorded_messages: list[str] = []
+    handler = _ListHandler(recorded_messages)
+    qwen_spatial.logger.addHandler(handler)
+
+    try:
+        patched = qwen_spatial.apply_dype_to_qwen_image(
+            model=patcher,
+            width=2048,
+            height=2048,
+            method="yarn",
+            enable_dype=True,
+            dype_exponent=2.0,
+            base_width=512,
+            base_height=512,
+            base_shift=1.0,
+            max_shift=1.2,
+            auto_detect=True,
+            editing_strength=0.5,
+            editing_mode="adaptive",
+        )
+
+        embedder = patched.model.diffusion_model.pe_embedder
+        assert embedder.grid.base_axes == (64, 64)
+        assert embedder.patch_size == 2
+        all_messages = [record.message for record in caplog.records if record.name == "src.qwen_spatial"] + recorded_messages
+        assert any("detected geometry" in message for message in all_messages)
+    finally:
+        qwen_spatial.logger.removeHandler(handler)
+
+
+def test_apply_dype_to_qwen_image_patches_fallback_sampler():
+    patcher = comfy.model_patcher.ModelPatcher()
+
+    class _FallbackSampler:
+        def __init__(self):
+            self.sigma_max = 2.0
+            self._dype_patched = False
+
+        def sigma(self, timestep):
+            return timestep * 2.0
+
+    fallback_sampler = _FallbackSampler()
+    patcher.model.model_sampling = fallback_sampler
+
+    patched = qwen_spatial.apply_dype_to_qwen_image(
+        model=patcher,
+        width=2048,
+        height=2048,
+        method="ntk",
+        enable_dype=True,
+        dype_exponent=2.0,
+        base_width=1024,
+        base_height=1024,
+        base_shift=1.0,
+        max_shift=1.3,
+        auto_detect=False,
+        editing_strength=1.0,
+        editing_mode="full",
+    )
+
+    assert fallback_sampler._dype_patched is True
+    original_sigma = 0.5 * 2.0
+    adjusted_sigma = fallback_sampler.sigma(0.5)
+    assert adjusted_sigma > original_sigma
+    assert isinstance(patched.model.diffusion_model.pe_embedder, qwen_spatial.QwenSpatialPosEmbed)
+
+
+def test_editing_mode_records_log_when_enabled(caplog):
+    backing = _RecordingEmbedder()
+    embedder = qwen_spatial.QwenSpatialPosEmbed(
+        theta=backing.theta,
+        axes_dim=backing.axes_dim,
+        patch_size=2,
+        vae_scale_factor=8,
+        method="ntk",
+        enable_dype=True,
+        dype_exponent=2.0,
+        base_resolution=(64, 64),
+        target_resolution=(128, 128),
+        backing_embedder=backing,
+        editing_strength=0.5,
+        editing_mode="minimal",
+    )
+
+    caplog.set_level(logging.INFO, logger="src.qwen_spatial")
+    recorded_messages: list[str] = []
+    handler = _ListHandler(recorded_messages)
+    qwen_spatial.logger.addHandler(handler)
+
+    embedder.set_timestep(0.25, is_editing=True)
+    ids = _make_token_ids(expanded=True)
+    embedder(ids)
+
+    try:
+        messages = [
+            record.message for record in caplog.records if record.name == "src.qwen_spatial"
+        ] + recorded_messages
+        assert any("editing=True" in message for message in messages)
+        assert any("editing_strength=0.500" in message for message in messages)
+    finally:
+        qwen_spatial.logger.removeHandler(handler)

@@ -139,13 +139,20 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
                     step=8,
                     tooltip="Target output height in pixels.",
                 ),
+                io.Boolean.Input(
+                    "auto_detect",
+                    default=True,
+                    label_on="Auto",
+                    label_off="Manual",
+                    tooltip="Automatically detect Qwen patch size and training resolution from the model.",
+                ),
                 io.Int.Input(
                     "base_width",
                     default=1024,
                     min=16,
                     max=16384,
                     step=8,
-                    tooltip="Training width used by the base Qwen model (typically 1024).",
+                    tooltip="Training width used by the base Qwen model (used when auto detection is disabled).",
                 ),
                 io.Int.Input(
                     "base_height",
@@ -153,7 +160,7 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
                     min=16,
                     max=16384,
                     step=8,
-                    tooltip="Training height used by the base Qwen model (typically 1024).",
+                    tooltip="Training height used by the base Qwen model (used when auto detection is disabled).",
                 ),
                 io.Combo.Input(
                     "method",
@@ -195,6 +202,21 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
                     optional=True,
                     tooltip="Maximum shift applied when operating at the target resolution.",
                 ),
+                io.Float.Input(
+                    "editing_strength",
+                    default=1.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.05,
+                    optional=True,
+                    tooltip="Scale DyPE while editing images (1.0 = full strength, 0.0 = disable DyPE scaling in edits).",
+                ),
+                io.Combo.Input(
+                    "editing_mode",
+                    options=["adaptive", "timestep_aware", "resolution_aware", "minimal", "full"],
+                    default="adaptive",
+                    tooltip="Strategy for tapering DyPE during edits. Adaptive is a balanced default.",
+                ),
             ],
             outputs=[
                 io.Model.Output(
@@ -210,6 +232,7 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
         model,
         width: int,
         height: int,
+        auto_detect: bool,
         base_width: int,
         base_height: int,
         method: str,
@@ -217,13 +240,16 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
         dype_exponent: float = 2.0,
         base_shift: float = 1.15,
         max_shift: float = 1.35,
+        editing_strength: float = 1.0,
+        editing_mode: str = "adaptive",
     ) -> io.NodeOutput:
         if not hasattr(model, "model") or not hasattr(model.model, "diffusion_model"):
             raise ValueError("This node expects a Qwen Image diffusion model input.")
 
         logger.info(
             "DyPE_QwenImage: requested patch (width=%d, height=%d, method=%s, "
-            "enable_dype=%s, dype_exponent=%s, base_shift=%s, max_shift=%s).",
+            "enable_dype=%s, dype_exponent=%s, base_shift=%s, max_shift=%s, "
+            "auto_detect=%s, editing_mode=%s, editing_strength=%.3f).",
             width,
             height,
             method,
@@ -231,6 +257,9 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
             dype_exponent,
             base_shift,
             max_shift,
+            auto_detect,
+            editing_mode,
+            editing_strength,
         )
 
         patched_model = apply_dype_to_qwen_image(
@@ -244,6 +273,9 @@ class DyPE_QWEN_IMAGE(io.ComfyNode):
             base_height=base_height,
             base_shift=base_shift,
             max_shift=max_shift,
+            auto_detect=auto_detect,
+            editing_strength=editing_strength,
+            editing_mode=editing_mode,
         )
         return io.NodeOutput(patched_model)
 
